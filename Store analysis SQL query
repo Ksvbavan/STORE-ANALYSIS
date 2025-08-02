@@ -1,0 +1,331 @@
+create database store;
+use store;
+show columns from store;
+Describe store;
+## check first 10 rows 
+select
+    *
+from
+    store
+limit
+    10;
+
+SELECT
+    *
+FROM
+    store
+WHERE
+    `Order ID` IS NULL;
+
+ALTER TABLE
+    store
+ADD
+    COLUMN order_date_converted DATE;
+
+UPDATE
+    store
+SET
+    order_date_converted = STR_TO_DATE(`Order Date`, '%d-%m-%Y');
+
+ALTER TABLE
+    store
+ADD
+    COLUMN ship_date_converted DATE;
+
+UPDATE
+    store
+SET
+    ship_date_converted = STR_TO_DATE(`Ship Date`, '%d-%m-%Y');
+
+-- ===============================
+-- REVENUE and SALES ANALYSIS
+-- ===============================
+select
+    sum(sales) as Total_Revenue,
+    Max(sales) as Highest_Revenue,
+    Min(sales) as Lowest_Revenue
+from
+    store;
+
+select
+    count(*) as Total_sales,
+    count(Distinct city) as Number_Of_cities
+from
+    store;
+
+with CTE as(
+    select
+        YEAR(order_date_converted) as year,
+        Round(sum(sales), 2) as total_sales,
+        Round(sum(profit), 2) as total_profit
+    from
+        store
+    group by
+        YEAR(order_date_converted)
+),
+yoy_growth as (
+    select
+        year,
+        total_sales,
+        total_profit,
+        Lag(total_sales) over (
+            order by
+                year
+        ) as previous_total_sales,
+        Lag(total_profit) over (
+            order by
+                year
+        ) as previous_total_profit
+    from
+        cte
+),
+yoy_growth_percentage as (
+    select
+        year,
+        total_sales,
+        total_profit,
+        previous_total_sales,
+        previous_total_profit,
+        Round(((total_sales / previous_total_sales) -1) * 100, 2) as sales_growth_percentage,
+        Round(((total_profit / previous_total_profit) -1) * 100, 2) as profit_growth_percentage
+    from
+        yoy_growth
+)
+select
+    year,
+    total_sales,
+    total_profit,
+    sales_growth_percentage,
+    profit_growth_percentage
+from
+    yoy_growth_percentage;
+
+-- ========================================
+-- Category and Region-wise YoY growth
+-- ========================================
+WITH cte AS (
+    SELECT
+        YEAR(order_date_converted) AS year,
+        `Product Category`,
+        Region,
+        round(SUM(sales), 3) AS total_sales,
+        round(SUM(profit), 3) AS total_profit
+    FROM
+        store
+    GROUP BY
+        YEAR(order_date_converted),
+        `Product Category`,
+        Region
+),
+yoy_growth AS (
+    SELECT
+        year,
+        Region,
+        `Product Category`,
+        total_sales,
+        total_profit,
+        LAG(total_sales) OVER (
+            partition by Region,
+            `Product Category`
+            ORDER BY
+                year
+        ) AS previous_total_sale,
+        LAG(total_profit) OVER (
+            partition by Region,
+            `Product Category`
+            ORDER BY
+                year
+        ) AS previous_total_profit
+    FROM
+        cte
+),
+yoy_growth_percentage AS (
+    SELECT
+        year,
+        `Product Category`,
+        Region,
+        total_sales,
+        total_profit,
+        previous_total_sale,
+        previous_total_profit,
+        round((total_sales / previous_total_sale - 1) * 100, 3) AS sales_growth_percentage,
+        round(
+            (total_profit / previous_total_profit - 1) * 100,
+            3
+        ) AS profit_growth_percentage
+    FROM
+        yoy_growth
+)
+SELECT
+    year,
+    Region,
+    `Product Category`,
+    total_sales,
+    total_profit,
+    sales_growth_percentage,
+    profit_growth_percentage
+FROM
+    yoy_growth_percentage;
+
+-- ========================================
+-- most revenue generating Category and Sub-Category in each region
+-- ========================================
+WITH SubcategorySales AS (
+    SELECT
+        Region,
+        `Product Category`,
+        `Product Sub-Category`,
+        SUM(sales) AS total_sales_generated
+    FROM
+        store
+    GROUP BY
+        Region,
+        `Product Category`,
+        `Product Sub-Category`
+),
+RankedSubcategories AS (
+    SELECT
+        *,
+        ROW_NUMBER() OVER (
+            PARTITION BY Region
+            ORDER BY
+                total_sales_generated DESC
+        ) AS row_num
+    FROM
+        SubcategorySales
+)
+SELECT
+    Region,
+    `Product Category`,
+    `Product Sub-Category`,
+    ROUND(total_sales_generated, 3) AS 'sales($)'
+FROM
+    RankedSubcategories
+WHERE
+    row_num = 1;
+
+-- ========================================
+-- 4. Which are the top 5 products with the highest average sales ?
+-- ========================================
+SELECT
+    `Product Category`,
+    `Product Sub-Category`,
+    `Product Name`,
+    ROUND(AVG(sales), 2) AS avg_sales
+FROM
+    store
+GROUP BY
+    `Product Category`,
+    `Product Sub-Category`,
+    `Product Name`
+ORDER BY
+    avg_sales DESC
+LIMIT
+    5;
+
+-- ========================================
+-- 5. Which are Top 10 loss making products?
+-- ========================================
+SELECT
+    `Product Category`,
+    `Product Sub-Category`,
+    `Product Name`,
+    sum(Profit) AS total_profit
+FROM
+    store
+GROUP BY
+    `Product Category`,
+    `Product Sub-Category`,
+    `Product Name`
+ORDER BY
+    total_profit Asc
+LIMIT
+    10;
+
+-- ========================================
+-- 6. Which segment places the highest number of orders from each state?
+-- ========================================
+WITH cte AS (
+    SELECT
+        `State or Province`,
+        `Customer Segment`,
+        COUNT(`Order ID`) AS total_orders
+    FROM
+        store
+    GROUP BY
+        `State or Province`,
+        `Customer Segment`
+),
+cte2 AS (
+    SELECT
+        `State or Province`,
+        MAX(total_orders) AS max_orders
+    FROM
+        cte
+    GROUP BY
+        `State or Province`
+)
+SELECT
+    a.`State or Province`,
+    a.`Customer Segment`,
+    a.total_orders
+FROM
+    cte AS a
+    JOIN cte2 AS b ON a.`State or Province` = b.`State or Province`
+    AND a.total_orders = b.max_orders
+ORDER BY
+    `State or Province`;
+
+-- ========================================
+-- Which are the Top 15 States with the Most Orders including average order value and profit per order?
+-- ========================================
+select
+    `State or Province`,
+    Region,
+    count(*) as no_of_orders,
+    round(Avg(sales), 2) as avg_order_value,
+    round(avg(profit), 2) as profit_per_order
+from
+    store
+group by
+    `State or Province`,
+    Region
+order by
+    count(*) desc
+limit 15
+	-- ========================================
+    -- 9. What is the typical wait time between placing an order and its shipment?
+    -- ========================================
+SELECT
+    Round(
+        AVG(
+            DATEDIFF(ship_date_converted, order_date_converted)
+        ),
+        2
+    ) AS avg_shipping_days
+FROM
+    store;
+
+-- ========================================
+-- 11. What percentage of orders is associated with each shipment type?
+-- ========================================
+SELECT
+    `Ship Mode`,
+    COUNT(*) AS total_orders,
+    ROUND(
+        (
+            COUNT(*) * 100.00 / (
+                SELECT
+                    COUNT(*)
+                FROM
+                    store
+            )
+        ),
+        2
+    ) AS percentage
+FROM
+    store
+GROUP BY
+    `Ship Mode`
+ORDER BY
+    percentage DESC;
